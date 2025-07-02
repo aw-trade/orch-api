@@ -1,0 +1,48 @@
+services:
+  market-streamer:
+    image: market-streamer:latest
+    container_name: market-streamer
+    pull_policy: never
+    networks:
+      - trading-network
+    ports:
+      - "8001:8001"
+    environment:
+      - BIND_ADDR=0.0.0.0:8888
+    expose:
+      - "8888"
+
+  order-book-algo:
+    image: order-book-algo:latest
+    container_name: order-book-algo
+    pull_policy: never
+    depends_on:
+      - market-streamer
+    networks:
+      - trading-network
+    ports:
+      - "8002:8002"
+      - "9999:9999"  # Expose the signal output port
+    environment:
+      - STREAMING_SOURCE_IP=market-streamer  # Use service name instead of localhost
+      - STREAMING_SOURCE_PORT=8888
+    expose:
+      - "9999"
+
+  trade-simulator:
+    image: trade-simulator:latest
+    container_name: trade-simulator
+    pull_policy: never
+    depends_on:
+      - order-book-algo
+    networks:
+      - trading-network
+    ports:
+      - "8003:8003"
+    environment:
+      - ALGORITHM_SOURCE_IP=order-book-algo  # Use service name
+      - ALGORITHM_SOURCE_PORT=9999
+
+networks:
+  trading-network:
+    driver: bridge
