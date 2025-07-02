@@ -20,12 +20,24 @@ services:
       - market-streamer
     networks:
       - trading-network
+      - external
     ports:
       - "8002:8002"
       - "9999:9999"  # Expose the signal output port
     environment:
       - STREAMING_SOURCE_IP=market-streamer  # Use service name instead of localhost
       - STREAMING_SOURCE_PORT=8888
+      # Database connection settings (external databases)
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=trading_results
+      - POSTGRES_USER=trading_user
+      - POSTGRES_PASSWORD=trading_pass
+      - MONGODB_HOST=mongodb
+      - MONGODB_PORT=27017
+      - MONGODB_USERNAME=admin
+      - MONGODB_PASSWORD=admin_pass
+      - MONGODB_DATABASE=trading_configs
     expose:
       - "9999"
 
@@ -37,12 +49,28 @@ services:
       - order-book-algo
     networks:
       - trading-network
+      - external
     ports:
       - "8003:8003"
     environment:
       - ALGORITHM_SOURCE_IP=order-book-algo  # Use service name
       - ALGORITHM_SOURCE_PORT=9999
+      # Database connection settings (external databases)
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=trading_results
+      - POSTGRES_USER=trading_user
+      - POSTGRES_PASSWORD=trading_pass
+      - MONGODB_HOST=mongodb
+      - MONGODB_PORT=27017
+      - MONGODB_USERNAME=admin
+      - MONGODB_PASSWORD=admin_pass
+      - MONGODB_DATABASE=trading_configs
 
 networks:
   trading-network:
     driver: bridge
+  # Connect to external database network
+  external:
+    external: true
+    name: trading-db-network

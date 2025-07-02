@@ -1,10 +1,13 @@
-import asyncio
 import docker
 import threading
 import subprocess
-from datetime import datetime, timedelta
+import os
+from datetime import datetime
 from enum import Enum
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 class SimulationStatus(Enum):
     IDLE = "idle"
@@ -21,6 +24,7 @@ class SimulatorService:
         self.duration: Optional[int] = None
         self.stop_timer: Optional[threading.Timer] = None
         self.error_message: Optional[str] = None
+        self.current_run_id: Optional[str] = None
     
     def _get_docker_client(self):
         if self.client is None:
@@ -30,7 +34,7 @@ class SimulatorService:
                 raise Exception(f"Failed to connect to Docker: {str(e)}")
         return self.client
         
-    def start_simulation(self, duration_seconds: int) -> bool:
+    def start_simulation(self, run_id: str, duration_seconds: int, algo_consts=None, simulator_consts=None) -> bool:
         if self.status != SimulationStatus.IDLE:
             return False
             
@@ -38,10 +42,46 @@ class SimulatorService:
             self.status = SimulationStatus.STARTING
             self.start_time = datetime.now()
             self.duration = duration_seconds
+            self.current_run_id = run_id
+            
+            logger.info(f"Starting simulation {run_id} for {duration_seconds} seconds")
+            
+            # Set environment variables for configuration
+            env = os.environ.copy()
+            
+            # Add run ID for tracking
+            env["SIMULATION_RUN_ID"] = run_id
+            
+            # Add database connection info
+            env["POSTGRES_HOST"] = "postgres"
+            env["POSTGRES_PORT"] = "5432"
+            env["POSTGRES_DB"] = "trading_results"
+            env["POSTGRES_USER"] = "trading_user"
+            env["POSTGRES_PASSWORD"] = "trading_pass"
+            
+            env["MONGODB_HOST"] = "mongodb"
+            env["MONGODB_PORT"] = "27017"
+            env["MONGODB_USERNAME"] = "admin"
+            env["MONGODB_PASSWORD"] = "admin_pass"
+            env["MONGODB_DATABASE"] = "trading_configs"
+            
+            # Add algorithm constants
+            if algo_consts:
+                for key, value in algo_consts.dict().items():
+                    if value is not None:
+                        env[key] = str(value)
+                        logger.debug(f"Set algo config: {key}={value}")
+            
+            # Add simulator constants
+            if simulator_consts:
+                for key, value in simulator_consts.dict().items():
+                    if value is not None:
+                        env[key] = str(value)
+                        logger.debug(f"Set simulator config: {key}={value}")
             
             # Start docker compose using subprocess (more reliable)
             result = subprocess.run(['docker', 'compose', 'up', '-d'], 
-                                  capture_output=True, text=True, cwd='.')
+                                  capture_output=True, text=True, cwd='.', env=env)
             if result.returncode != 0:
                 raise Exception(f"Docker compose failed: {result.stderr}")
             
@@ -79,6 +119,7 @@ class SimulatorService:
             self.start_time = None
             self.duration = None
             self.stop_timer = None
+            self.current_run_id = None
             
             return True
             
@@ -88,6 +129,10 @@ class SimulatorService:
     
     def _auto_stop(self):
         self.stop_simulation()
+    
+    def get_current_run_id(self) -> Optional[str]:
+        """Get the current running simulation ID"""
+        return self.current_run_id
     
     def get_status(self) -> dict:
         elapsed = None
@@ -99,6 +144,7 @@ class SimulatorService:
             
         return {
             "status": self.status.value,
+            "run_id": self.current_run_id,
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "duration": self.duration,
             "elapsed": elapsed,
