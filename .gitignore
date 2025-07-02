@@ -5,3 +5,5 @@ database/__pycache__/models.cpython-312.pyc
 database/__pycache__/mongodb_client.cpython-312.pyc
 database/__pycache__/postgres_client.cpython-312.pyc
 .venv/
+__pycache__/compose_generator.cpython-312.pyc
+__pycache__/resource_manager.cpython-312.pyc
