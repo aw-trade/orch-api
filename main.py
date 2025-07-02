@@ -7,6 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from simulator_service import SimulatorService
+from resource_manager import ResourceManager
 from database.models import (
     StartSimulationRequest, StartSimulationResponse, SimulationStatusResponse,
     SimulationResultsResponse, SimulationSummary, AlgoConfig, SimulatorConfig,
@@ -34,6 +35,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 simulator = SimulatorService()
+resource_manager = ResourceManager(simulator)
 
 # Models are now imported from database.models
 
@@ -80,9 +82,9 @@ async def start_simulation(request: StartSimulationRequest):
         initial_capital=simulator_config.INITIAL_CAPITAL
     )
     
-    run_saved = await postgres_client.create_simulation_run(simulation_run)
-    if not run_saved:
-        raise HTTPException(status_code=500, detail="Failed to create simulation run record")
+    #run_saved = await postgres_client.create_simulation_run(simulation_run)
+    #if not run_saved:
+    #    raise HTTPException(status_code=500, detail="Failed to create simulation run record")
     
     # Start the simulation
     success = simulator.start_simulation(
@@ -111,12 +113,18 @@ async def start_simulation(request: StartSimulationRequest):
         if current_status["status"] == "error":
             raise HTTPException(status_code=500, detail="Failed to start simulation")
         else:
-            raise HTTPException(status_code=409, detail="Simulation already running")
+            raise HTTPException(status_code=500, detail="Failed to start simulation")
 
 @app.get("/simulate/status")
 async def get_simulation_status():
-    """Get status of currently running simulation"""
+    """Get status of all running simulations"""
     status = simulator.get_status()
+    return status
+
+@app.get("/simulate/status/{run_id}")
+async def get_specific_simulation_status(run_id: str):
+    """Get status of a specific simulation"""
+    status = simulator.get_status(run_id)
     return status
 
 @app.get("/simulate/runs", response_model=List[SimulationSummary])
@@ -174,52 +182,49 @@ async def get_simulation_run_status(run_id: str):
     )
 
 @app.post("/simulate/stop", response_model=StopSimulationResponse)
-async def stop_simulation():
-    """Stop currently running simulation"""
-    current_run_id = simulator.get_current_run_id()
-    success = simulator.stop_simulation()
+async def stop_all_simulations():
+    """Stop all currently running simulations"""
+    results = simulator.stop_all_simulations()
     
-    if success and current_run_id:
-        # Update status in both databases
-        await mongodb_client.update_simulation_config(current_run_id, {"status": SimulationStatus.STOPPED.value})
-        await postgres_client.update_simulation_run(current_run_id, {
-            "status": SimulationStatus.STOPPED.value,
-            "end_time": datetime.now()
-        })
-        
+    if not results:
+        raise HTTPException(status_code=409, detail="No simulations running")
+    
+    stopped_runs = []
+    failed_runs = []
+    
+    for run_id, success in results.items():
+        if success:
+            # Update status in both databases
+            await mongodb_client.update_simulation_config(run_id, {"status": SimulationStatus.STOPPED.value})
+            await postgres_client.update_simulation_run(run_id, {
+                "status": SimulationStatus.STOPPED.value,
+                "end_time": datetime.now()
+            })
+            stopped_runs.append(run_id)
+        else:
+            failed_runs.append(run_id)
+    
+    if failed_runs:
         return StopSimulationResponse(
-            success=True,
-            message="Simulation stopped successfully",
-            run_id=current_run_id
-        )
-    elif success:
-        return StopSimulationResponse(
-            success=True,
-            message="Simulation stopped successfully"
+            success=False,
+            message=f"Stopped {len(stopped_runs)} simulations, failed to stop {len(failed_runs)}: {', '.join(failed_runs)}"
         )
     else:
-        current_status = simulator.get_status()
-        if current_status["status"] == "idle":
-            raise HTTPException(status_code=409, detail="No simulation running")
-        else:
-            raise HTTPException(status_code=500, detail="Failed to stop simulation")
+        return StopSimulationResponse(
+            success=True,
+            message=f"Successfully stopped {len(stopped_runs)} simulations: {', '.join(stopped_runs)}"
+        )
 
 @app.post("/simulate/stop/{run_id}", response_model=StopSimulationResponse)
 async def stop_specific_simulation(run_id: str):
     """Stop a specific simulation run"""
-    # Check if this is the currently running simulation
-    current_run_id = simulator.get_current_run_id()
+    # Check if the run exists in the database
+    simulation = await postgres_client.get_simulation_run(run_id)
+    if not simulation:
+        raise HTTPException(status_code=404, detail="Simulation run not found")
     
-    if current_run_id != run_id:
-        # Check if the run exists and is actually running
-        simulation = await postgres_client.get_simulation_run(run_id)
-        if not simulation:
-            raise HTTPException(status_code=404, detail="Simulation run not found")
-        if simulation.status != SimulationStatus.RUNNING:
-            raise HTTPException(status_code=409, detail="Simulation is not currently running")
-        raise HTTPException(status_code=409, detail="Cannot stop a different simulation than currently running")
-    
-    success = simulator.stop_simulation()
+    # Attempt to stop the simulation
+    success = simulator.stop_simulation(run_id)
     
     if success:
         # Update status in both databases
@@ -235,7 +240,12 @@ async def stop_specific_simulation(run_id: str):
             run_id=run_id
         )
     else:
-        raise HTTPException(status_code=500, detail="Failed to stop simulation")
+        # Check if it's already stopped or if it's an error
+        sim_status = simulator.get_status(run_id)
+        if sim_status.get("status") == "not_found":
+            raise HTTPException(status_code=404, detail="Simulation not currently active")
+        else:
+            raise HTTPException(status_code=500, detail="Failed to stop simulation")
 
 @app.get("/results/{run_id}", response_model=SimulationResultsResponse)
 async def get_simulation_results(run_id: str):
@@ -292,7 +302,6 @@ async def get_analytics_summary():
     config_stats = await mongodb_client.get_config_stats()
     
     # Calculate basic metrics
-    total_runs = len(recent_runs)
     completed_runs = [r for r in recent_runs if r.status == SimulationStatus.COMPLETED]
     
     avg_return = 0.0
@@ -307,6 +316,38 @@ async def get_analytics_summary():
         "configuration_stats": config_stats
     }
 
+@app.get("/resources/usage")
+async def get_resource_usage():
+    """Get current Docker resource usage"""
+    return resource_manager.get_docker_resource_usage()
+
+@app.get("/resources/limits")
+async def check_resource_limits():
+    """Check if approaching resource limits"""
+    return resource_manager.check_resource_limits()
+
+@app.post("/resources/cleanup")
+async def cleanup_resources():
+    """Clean up orphaned Docker resources"""
+    return resource_manager.full_cleanup()
+
+@app.post("/simulate/force-stop/{run_id}")
+async def force_stop_simulation(run_id: str):
+    """Force stop a simulation (emergency stop)"""
+    success = resource_manager.force_stop_simulation(run_id)
+    
+    if success:
+        # Update database status
+        await mongodb_client.update_simulation_config(run_id, {"status": SimulationStatus.STOPPED.value})
+        await postgres_client.update_simulation_run(run_id, {
+            "status": SimulationStatus.STOPPED.value,
+            "end_time": datetime.now()
+        })
+        
+        return {"success": True, "message": f"Simulation {run_id} force stopped"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to force stop simulation")
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
@@ -315,11 +356,19 @@ async def health_check():
         postgres_healthy = postgres_client.connection_pool is not None
         mongo_healthy = mongodb_client.client is not None
         
+        # Check resource status
+        resource_status = resource_manager.check_resource_limits()
+        
         return {
             "status": "healthy" if postgres_healthy and mongo_healthy else "degraded",
             "databases": {
                 "postgresql": "connected" if postgres_healthy else "disconnected",
                 "mongodb": "connected" if mongo_healthy else "disconnected"
+            },
+            "resources": {
+                "active_simulations": resource_status["active_runs"],
+                "at_limit": resource_status["at_limit"],
+                "warnings": resource_status["warnings"]
             }
         }
     except Exception as e:
