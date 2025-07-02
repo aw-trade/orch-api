@@ -38,65 +38,65 @@ class SimulatorService:
         if self.status != SimulationStatus.IDLE:
             return False
             
-        try:
-            self.status = SimulationStatus.STARTING
-            self.start_time = datetime.now()
-            self.duration = duration_seconds
-            self.current_run_id = run_id
+        #try:
+        self.status = SimulationStatus.STARTING
+        self.start_time = datetime.now()
+        self.duration = duration_seconds
+        self.current_run_id = run_id
+        
+        logger.info(f"Starting simulation {run_id} for {duration_seconds} seconds")
+        
+        # Set environment variables for configuration
+        env = os.environ.copy()
+        
+        # Add run ID for tracking
+        env["SIMULATION_RUN_ID"] = run_id
+        
+        # Add database connection info
+        env["POSTGRES_HOST"] = "postgres"
+        env["POSTGRES_PORT"] = "5432"
+        env["POSTGRES_DB"] = "trading_results"
+        env["POSTGRES_USER"] = "trading_user"
+        env["POSTGRES_PASSWORD"] = "trading_pass"
+        
+        env["MONGODB_HOST"] = "mongodb"
+        env["MONGODB_PORT"] = "27017"
+        env["MONGODB_USERNAME"] = "admin"
+        env["MONGODB_PASSWORD"] = "admin_pass"
+        env["MONGODB_DATABASE"] = "trading_configs"
+        
+        # Add algorithm constants
+        if algo_consts:
+            for key, value in algo_consts.dict().items():
+                if value is not None:
+                    env[key] = str(value)
+                    logger.debug(f"Set algo config: {key}={value}")
+        
+        # Add simulator constants
+        if simulator_consts:
+            for key, value in simulator_consts.dict().items():
+                if value is not None:
+                    env[key] = str(value)
+                    logger.debug(f"Set simulator config: {key}={value}")
+        
+        # Start docker compose using subprocess (more reliable)
+        result = subprocess.run(['docker', 'compose', 'up', '-d'], 
+                                capture_output=True, text=True, cwd='.', env=env)
+        if result.returncode != 0:
+            raise Exception(f"Docker compose failed: {result.stderr}")
+        self.status = SimulationStatus.RUNNING
+        
+        # Set timer to stop simulation
+        self.stop_timer = threading.Timer(duration_seconds, self._auto_stop)
+        self.stop_timer.start()
+        
+        return True
             
-            logger.info(f"Starting simulation {run_id} for {duration_seconds} seconds")
-            
-            # Set environment variables for configuration
-            env = os.environ.copy()
-            
-            # Add run ID for tracking
-            env["SIMULATION_RUN_ID"] = run_id
-            
-            # Add database connection info
-            env["POSTGRES_HOST"] = "postgres"
-            env["POSTGRES_PORT"] = "5432"
-            env["POSTGRES_DB"] = "trading_results"
-            env["POSTGRES_USER"] = "trading_user"
-            env["POSTGRES_PASSWORD"] = "trading_pass"
-            
-            env["MONGODB_HOST"] = "mongodb"
-            env["MONGODB_PORT"] = "27017"
-            env["MONGODB_USERNAME"] = "admin"
-            env["MONGODB_PASSWORD"] = "admin_pass"
-            env["MONGODB_DATABASE"] = "trading_configs"
-            
-            # Add algorithm constants
-            if algo_consts:
-                for key, value in algo_consts.dict().items():
-                    if value is not None:
-                        env[key] = str(value)
-                        logger.debug(f"Set algo config: {key}={value}")
-            
-            # Add simulator constants
-            if simulator_consts:
-                for key, value in simulator_consts.dict().items():
-                    if value is not None:
-                        env[key] = str(value)
-                        logger.debug(f"Set simulator config: {key}={value}")
-            
-            # Start docker compose using subprocess (more reliable)
-            result = subprocess.run(['docker', 'compose', 'up', '-d'], 
-                                  capture_output=True, text=True, cwd='.', env=env)
-            if result.returncode != 0:
-                raise Exception(f"Docker compose failed: {result.stderr}")
-            
-            self.status = SimulationStatus.RUNNING
-            
-            # Set timer to stop simulation
-            self.stop_timer = threading.Timer(duration_seconds, self._auto_stop)
-            self.stop_timer.start()
-            
-            return True
-            
-        except Exception as e:
-            self.status = SimulationStatus.ERROR
-            self.error_message = str(e)
-            return False
+        #except Exception as e:
+        #    self.status = SimulationStatus.ERROR
+        #    self.error_message = str(e)
+        #    return False
+        
     
     def stop_simulation(self) -> bool:
         if self.status not in [SimulationStatus.RUNNING, SimulationStatus.STARTING]:

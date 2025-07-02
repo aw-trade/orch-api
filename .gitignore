@@ -4,3 +4,4 @@ database/__pycache__/__init__.cpython-312.pyc
 database/__pycache__/models.cpython-312.pyc
 database/__pycache__/mongodb_client.cpython-312.pyc
 database/__pycache__/postgres_client.cpython-312.pyc
+.venv/
