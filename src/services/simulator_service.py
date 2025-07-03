@@ -8,8 +8,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional, Dict, List
 import logging
-from compose_generator import ComposeGenerator
-from config import get_config
+from src.utils.compose_generator import ComposeGenerator
+from src.core.config import get_config
 
 logger = logging.getLogger(__name__)
 

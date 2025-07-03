@@ -1,15 +1,15 @@
 import yaml
 import os
 from typing import Dict, Any, Optional
-from database.models import AlgoConfig, SimulatorConfig
+from src.database.models import AlgoConfig, SimulatorConfig
 
 
 class ComposeGenerator:
     """Generates dynamic docker-compose files for parallel simulation runs"""
     
-    def __init__(self, template_path: str = "docker-compose.yml"):
+    def __init__(self, template_path: str = "docker/docker-compose.yml"):
         self.template_path = template_path
-        self.compose_dir = "compose_files"
+        self.compose_dir = "docker/compose_files"
         os.makedirs(self.compose_dir, exist_ok=True)
     
     def generate_compose_file(self, 

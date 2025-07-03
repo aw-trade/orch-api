@@ -3,7 +3,7 @@ import logging
 import time
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
-from simulator_service import SimulatorService
+from src.services.simulator_service import SimulatorService
 
 logger = logging.getLogger(__name__)
 

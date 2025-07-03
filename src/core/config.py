@@ -11,7 +11,7 @@ class DatabaseConfig(BaseModel):
     retry_delay: float = float(os.getenv("DB_RETRY_DELAY", "1.0"))
     circuit_breaker_threshold: int = int(os.getenv("DB_CIRCUIT_BREAKER_THRESHOLD", "5"))
     circuit_breaker_reset_timeout: int = int(os.getenv("DB_CIRCUIT_BREAKER_RESET", "60"))
-    backup_dir: str = os.getenv("BACKUP_DIR", "./backup")
+    backup_dir: str = os.getenv("BACKUP_DIR", "./data/backup")
     
     # PostgreSQL specific
     postgres_host: str = os.getenv("POSTGRES_HOST", "localhost")
