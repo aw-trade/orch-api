@@ -30,6 +30,7 @@ class ComposeGenerator:
         market_streamer_port = 8001 + port_offset
         order_book_port = 8002 + port_offset
         trade_sim_port = 8003 + port_offset
+        results_api_port = 8080 + port_offset
         signal_port = 9999 + port_offset
         
         # Create new compose structure
@@ -126,7 +127,10 @@ class ComposeGenerator:
             "pull_policy": "never",
             "depends_on": [f"order-book-algo-{run_id}"],
             "networks": [network_name, "external"],
-            "ports": [f"{trade_sim_port}:8003"],
+            "ports": [
+                f"{trade_sim_port}:8003",
+                f"{results_api_port}:8080"
+            ],
             "environment": simulator_env
         }
         
@@ -149,6 +153,11 @@ class ComposeGenerator:
     def get_compose_file_path(self, run_id: str) -> str:
         """Get the path to the compose file for a run"""
         return os.path.join(self.compose_dir, f"docker-compose-{run_id}.yml")
+    
+    def get_results_api_port(self, run_id: str) -> int:
+        """Get the results API port for a specific run_id"""
+        port_offset = abs(hash(run_id)) % 10000
+        return 8080 + port_offset
     
     def list_active_compose_files(self) -> list:
         """List all active compose files"""

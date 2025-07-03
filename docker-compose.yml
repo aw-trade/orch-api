@@ -66,6 +66,7 @@ services:
       - MONGODB_USERNAME=admin
       - MONGODB_PASSWORD=admin_pass
       - MONGODB_DATABASE=trading_configs
+      - MAX_RUNTIME_SECS=280
 
 networks:
   trading-network:

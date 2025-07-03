@@ -4,6 +4,9 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 import os
 import logging
+import json
+from pathlib import Path
+import time
 from .models import SimulationRun, Trade, Position, SimulationStatus
 
 logger = logging.getLogger(__name__)
@@ -16,6 +19,136 @@ class PostgresClient:
         self.database = os.getenv("POSTGRES_DB", "trading_results")
         self.user = os.getenv("POSTGRES_USER", "trading_user")
         self.password = os.getenv("POSTGRES_PASSWORD", "trading_pass")
+        
+        # Backup configuration
+        self.backup_dir = Path(os.getenv("BACKUP_DIR", "./backup"))
+        self.backup_dir.mkdir(exist_ok=True)
+        
+        # Retry configuration
+        self.max_retries = int(os.getenv("DB_MAX_RETRIES", "3"))
+        self.retry_delay = float(os.getenv("DB_RETRY_DELAY", "1.0"))
+        self.circuit_breaker_threshold = int(os.getenv("DB_CIRCUIT_BREAKER_THRESHOLD", "5"))
+        self.circuit_breaker_reset_timeout = int(os.getenv("DB_CIRCUIT_BREAKER_RESET", "60"))
+        
+        # Circuit breaker state
+        self.failure_count = 0
+        self.last_failure_time = 0
+        self.circuit_open = False
+
+    def _check_circuit_breaker(self):
+        """Check if circuit breaker should be opened or reset"""
+        current_time = time.time()
+        
+        # Reset circuit breaker if timeout period has passed
+        if self.circuit_open and (current_time - self.last_failure_time) > self.circuit_breaker_reset_timeout:
+            logger.info("Circuit breaker reset - attempting to restore connection")
+            self.circuit_open = False
+            self.failure_count = 0
+        
+        return not self.circuit_open
+
+    def _record_failure(self):
+        """Record a database operation failure"""
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        
+        if self.failure_count >= self.circuit_breaker_threshold:
+            logger.error(f"Circuit breaker opened after {self.failure_count} failures")
+            self.circuit_open = True
+
+    def _record_success(self):
+        """Record a successful database operation"""
+        if self.failure_count > 0:
+            logger.info("Database operation successful - resetting failure count")
+        self.failure_count = 0
+
+    async def _execute_with_retry(self, operation, *args, **kwargs):
+        """Execute database operation with retry logic and circuit breaker"""
+        if not self._check_circuit_breaker():
+            raise Exception("Circuit breaker is open - database operations suspended")
+        
+        last_exception = None
+        
+        for attempt in range(self.max_retries + 1):
+            try:
+                result = await operation(*args, **kwargs)
+                self._record_success()
+                return result
+                
+            except Exception as e:
+                last_exception = e
+                logger.warning(f"Database operation failed (attempt {attempt + 1}/{self.max_retries + 1}): {e}")
+                
+                if attempt < self.max_retries:
+                    await asyncio.sleep(self.retry_delay * (2 ** attempt))  # Exponential backoff
+                else:
+                    self._record_failure()
+        
+        # All retries failed
+        raise last_exception
+
+    def _backup_to_file(self, operation_type: str, data: Dict):
+        """Backup operation data to JSON file when database is unavailable"""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{operation_type}_{timestamp}_{data.get('run_id', 'unknown')}.json"
+            filepath = self.backup_dir / filename
+            
+            backup_data = {
+                "timestamp": timestamp,
+                "operation": operation_type,
+                "data": data
+            }
+            
+            with open(filepath, 'w') as f:
+                json.dump(backup_data, f, indent=2, default=str)
+            
+            logger.info(f"Data backed up to file: {filepath}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to backup data to file: {e}")
+            return False
+
+    async def process_backup_files(self):
+        """Process backup files when database comes back online"""
+        try:
+            backup_files = list(self.backup_dir.glob("*.json"))
+            if not backup_files:
+                return
+            
+            logger.info(f"Found {len(backup_files)} backup files to process")
+            
+            for backup_file in backup_files:
+                try:
+                    with open(backup_file, 'r') as f:
+                        backup_data = json.load(f)
+                    
+                    operation = backup_data.get("operation")
+                    data = backup_data.get("data")
+                    
+                    if operation == "create_simulation_run":
+                        simulation = SimulationRun(**data)
+                        success = await self.create_simulation_run(simulation)
+                    elif operation == "update_simulation_run":
+                        run_id = data.get("run_id")
+                        updates = data.get("updates")
+                        success = await self.update_simulation_run(run_id, updates)
+                    else:
+                        logger.warning(f"Unknown backup operation: {operation}")
+                        continue
+                    
+                    if success:
+                        backup_file.unlink()  # Delete processed backup file
+                        logger.info(f"Processed and deleted backup file: {backup_file}")
+                    else:
+                        logger.warning(f"Failed to process backup file: {backup_file}")
+                        
+                except Exception as e:
+                    logger.error(f"Error processing backup file {backup_file}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Error processing backup files: {e}")
 
     async def connect(self):
         """Initialize connection pool"""
@@ -31,6 +164,14 @@ class PostgresClient:
                 command_timeout=60
             )
             logger.info(f"Connected to PostgreSQL at {self.host}:{self.port}")
+            
+            # Reset circuit breaker on successful connection
+            self.circuit_open = False
+            self.failure_count = 0
+            
+            # Process any backup files that accumulated during downtime
+            await self.process_backup_files()
+            
         except Exception as e:
             logger.error(f"Failed to connect to PostgreSQL: {e}")
             raise
@@ -42,8 +183,8 @@ class PostgresClient:
             logger.info("Disconnected from PostgreSQL")
 
     async def create_simulation_run(self, simulation: SimulationRun) -> bool:
-        """Create a new simulation run record"""
-        try:
+        """Create a new simulation run record with retry logic and backup"""
+        async def _create_operation():
             async with self.connection_pool.acquire() as conn:
                 await conn.execute("""
                     INSERT INTO simulation_runs (
@@ -65,18 +206,27 @@ class PostgresClient:
                     simulation.execution_rate, simulation.total_volume, simulation.sharpe_ratio,
                     simulation.avg_win, simulation.avg_loss
                 )
+        
+        try:
+            await self._execute_with_retry(_create_operation)
             logger.info(f"Created simulation run: {simulation.run_id}")
             return True
         except Exception as e:
             logger.error(f"Failed to create simulation run {simulation.run_id}: {e}")
+            
+            # Backup to file as fallback
+            backup_data = simulation.dict()
+            if self._backup_to_file("create_simulation_run", backup_data):
+                logger.info(f"Simulation run {simulation.run_id} backed up to file")
+            
             return False
 
     async def update_simulation_run(self, run_id: str, updates: Dict[str, Any]) -> bool:
-        """Update simulation run with new data"""
-        try:
-            if not updates:
-                return True
-                
+        """Update simulation run with new data, retry logic and backup"""
+        if not updates:
+            return True
+            
+        async def _update_operation():
             # Build dynamic update query
             set_clauses = []
             values = []
@@ -98,11 +248,19 @@ class PostgresClient:
             
             async with self.connection_pool.acquire() as conn:
                 await conn.execute(query, *values)
-            
-            logger.info(f"Updated simulation run: {run_id}")
+        
+        try:
+            await self._execute_with_retry(_update_operation)
+            logger.debug(f"Updated simulation run: {run_id}")
             return True
         except Exception as e:
             logger.error(f"Failed to update simulation run {run_id}: {e}")
+            
+            # Backup to file as fallback
+            backup_data = {"run_id": run_id, "updates": updates}
+            if self._backup_to_file("update_simulation_run", backup_data):
+                logger.info(f"Simulation run update {run_id} backed up to file")
+            
             return False
 
     async def get_simulation_run(self, run_id: str) -> Optional[SimulationRun]:

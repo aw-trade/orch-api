@@ -7,3 +7,10 @@ database/__pycache__/postgres_client.cpython-312.pyc
 .venv/
 __pycache__/compose_generator.cpython-312.pyc
 __pycache__/resource_manager.cpython-312.pyc
+__pycache__/config.cpython-312.pyc
+backup/update_simulation_run_20250703_093441_run_2025_07_03_093421_c89ddba1.json
+backup/update_simulation_run_20250703_094731_run_2025_07_03_093421_c89ddba1.json
+backup/update_simulation_run_20250703_094741_run_2025_07_03_093421_c89ddba1.json
+backup/update_simulation_run_20250703_094748_run_2025_07_03_093421_c89ddba1.json
+compose_files/docker-compose-run_2025_07_03_095049_926dd3e6.yml
+compose_files/docker-compose-run_2025_07_03_095148_6a32991f.yml

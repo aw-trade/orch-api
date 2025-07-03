@@ -2,11 +2,14 @@ import docker
 import threading
 import subprocess
 import os
+import requests
+import time
 from datetime import datetime
 from enum import Enum
 from typing import Optional, Dict, List
 import logging
 from compose_generator import ComposeGenerator
+from config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +29,14 @@ class SimulationRun:
         self.stop_timer: Optional[threading.Timer] = None
         self.error_message: Optional[str] = None
         self.compose_file_path: Optional[str] = None
+        self.results: Optional[Dict] = None
 
 class SimulatorService:
     def __init__(self):
         self.client = None
         self.active_runs: Dict[str, SimulationRun] = {}
         self.compose_generator = ComposeGenerator()
+        self.config = get_config()
         self._cleanup_orphaned_resources()
     
     def _get_docker_client(self):
@@ -80,6 +85,11 @@ class SimulatorService:
             
             logger.info(f"Starting simulation {run_id} for {duration_seconds} seconds")
             
+            # Ensure simulator config exists
+            if simulator_consts is None:
+                from database.models import SimulatorConfig
+                simulator_consts = SimulatorConfig()
+            
             # Generate unique compose file for this simulation
             compose_file_path = self.compose_generator.generate_compose_file(
                 run_id, algo_consts, simulator_consts
@@ -96,12 +106,8 @@ class SimulatorService:
                 
             simulation_run.status = SimulationStatus.RUNNING
             
-            # Set timer to auto-stop simulation
-            simulation_run.stop_timer = threading.Timer(
-                duration_seconds, 
-                lambda: self._auto_stop(run_id)
-            )
-            simulation_run.stop_timer.start()
+            # Note: Timer is now handled by Rust simulator after algorithm connection
+            # No FastAPI-level timer needed
             
             logger.info(f"Simulation {run_id} started successfully")
             return True
@@ -132,6 +138,12 @@ class SimulatorService:
             # Cancel timer if running
             if simulation_run.stop_timer:
                 simulation_run.stop_timer.cancel()
+            
+            # Collect results before stopping
+            if not simulation_run.results:  # Only collect if not already collected
+                results = self.collect_simulation_results(run_id)
+                if results:
+                    simulation_run.results = results
                 
             # Stop docker compose using the specific compose file
             if simulation_run.compose_file_path:
@@ -159,7 +171,86 @@ class SimulatorService:
     
     def _auto_stop(self, run_id: str):
         logger.info(f"Auto-stopping simulation {run_id} due to timeout")
+        # Collect results before stopping
+        results = self.collect_simulation_results(run_id)
+        if results:
+            logger.info(f"Successfully collected results for {run_id}")
+            # Store results for later database persistence
+            if run_id in self.active_runs:
+                self.active_runs[run_id].results = results
         self.stop_simulation(run_id)
+    
+    def collect_simulation_results(self, run_id: str) -> Optional[Dict]:
+        """Collect simulation results from the simulator's API before stopping"""
+        try:
+            # Get the results API port for this simulation
+            results_port = self.compose_generator.get_results_api_port(run_id)
+            
+            # Try to fetch results from the simulator
+            url = f"http://localhost:{results_port}/results"
+            logger.info(f"Collecting results from {url}")
+            
+            # Retry logic in case the simulator is still finalizing
+            max_retries = self.config.simulator.max_result_retries
+            timeout = self.config.simulator.default_results_timeout
+            
+            for attempt in range(max_retries):
+                try:
+                    response = requests.get(url, timeout=timeout)
+                    if response.status_code == 200:
+                        results = response.json()
+                        logger.info(f"Successfully collected results for {run_id}")
+                        return results
+                    elif response.status_code == 404:
+                        logger.info(f"Results not yet available for {run_id}, waiting...")
+                        time.sleep(2)
+                        continue
+                    else:
+                        logger.warning(f"Unexpected status code {response.status_code} from results API")
+                        time.sleep(1)
+                        continue
+                except requests.exceptions.RequestException as e:
+                    logger.warning(f"Attempt {attempt + 1} failed to collect results: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(2)
+                    continue
+            
+            logger.error(f"Failed to collect results for {run_id} after {max_retries} attempts")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error collecting results for {run_id}: {e}")
+            return None
+
+    def collect_live_stats(self, run_id: str) -> Optional[Dict]:
+        """Collect live statistics from the simulator's /stats endpoint during execution"""
+        try:
+            # Get the results API port for this simulation
+            results_port = self.compose_generator.get_results_api_port(run_id)
+            
+            # Try to fetch live stats from the simulator
+            url = f"http://localhost:{results_port}/stats"
+            logger.debug(f"Collecting live stats from {url}")
+            
+            timeout = self.config.stats_collection.collection_timeout_seconds
+            response = requests.get(url, timeout=timeout)
+            if response.status_code == 200:
+                stats = response.json()
+                logger.debug(f"Successfully collected live stats for {run_id}")
+                return stats
+            elif response.status_code == 404:
+                logger.debug(f"Live stats not available for {run_id}")
+                return None
+            else:
+                logger.warning(f"Unexpected status code {response.status_code} from stats API")
+                return None
+                
+        except requests.exceptions.RequestException as e:
+            logger.debug(f"Failed to collect live stats for {run_id}: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"Error collecting live stats for {run_id}: {e}")
+            return None
     
     def get_active_run_ids(self) -> List[str]:
         """Get all active simulation run IDs"""
@@ -279,3 +370,9 @@ class SimulatorService:
         """Get the first running simulation ID (for backward compatibility)"""
         running_sims = self.get_running_simulations()
         return running_sims[0] if running_sims else None
+    
+    def get_simulation_results(self, run_id: str) -> Optional[Dict]:
+        """Get the collected results for a specific simulation"""
+        if run_id in self.active_runs:
+            return self.active_runs[run_id].results
+        return None
