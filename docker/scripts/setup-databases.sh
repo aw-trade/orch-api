@@ -33,17 +33,42 @@ timeout 60 bash -c 'until docker exec trading-postgres pg_isready -U trading_use
 echo "   Waiting for MongoDB..."
 timeout 60 bash -c 'until docker exec trading-mongodb mongosh --quiet --eval "db.adminCommand(\"ping\")" > /dev/null 2>&1; do sleep 2; done'
 
+# Wait for Redis
+echo "   Waiting for Redis..."
+timeout 60 bash -c 'until docker exec trading-redis redis-cli ping > /dev/null 2>&1; do sleep 2; done'
+
 echo "✅ Databases are ready!"
+
+# Initialize Redis streams
+echo "🔄 Initializing Redis streams..."
+if docker exec trading-redis redis-cli ping > /dev/null 2>&1; then
+    echo "📊 Setting up Redis streams and consumer groups..."
+    docker exec trading-redis redis-cli XGROUP CREATE trading-stats trading-api-group 0 MKSTREAM 2>/dev/null || \
+    echo "📊 Consumer group 'trading-api-group' already exists or was created"
+    
+    # Add test message to verify stream functionality
+    TEST_MSG_ID=$(docker exec trading-redis redis-cli XADD trading-stats "*" \
+        "type" "test" \
+        "run_id" "setup-test" \
+        "data" '{"message": "Redis stream initialized via setup script"}' \
+        "timestamp" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+    
+    echo "✅ Redis stream initialized with test message ID: $TEST_MSG_ID"
+else
+    echo "⚠️  Redis is not available for stream initialization"
+fi
 
 # Show database status
 echo "📊 Database Status:"
 echo "   PostgreSQL: $(docker exec trading-postgres pg_isready -U trading_user -d trading_results)"
 echo "   MongoDB: $(docker exec trading-mongodb mongosh --quiet --eval 'db.adminCommand("ping").ok ? "Ready" : "Not ready"')"
+echo "   Redis: $(docker exec trading-redis redis-cli ping 2>/dev/null || echo "Not available")"
 
 echo ""
 echo "🔗 Connection Information:"
 echo "   PostgreSQL: localhost:5432 (user: trading_user, db: trading_results)"
 echo "   MongoDB: localhost:27017 (user: admin, db: trading_configs)"
+echo "   Redis: localhost:6379 (stream: trading-stats, group: trading-api-group)"
 echo ""
 echo "🛠️  Admin Tools (optional):"
 echo "   To start admin tools: docker compose -f docker-compose.databases.yml --profile admin-tools up -d"

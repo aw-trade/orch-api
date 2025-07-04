@@ -2,3 +2,4 @@
 data/backup/
 **/__pycache__/**
 docker/compose_files/
+backup/

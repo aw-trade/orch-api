@@ -123,11 +123,7 @@ async def start_simulation(
         await mongodb_client.update_simulation_config(run_id, {"status": SimulationStatus.FAILED.value})
         await postgres_client.update_simulation_run(run_id, {"status": SimulationStatus.FAILED.value})
         
-        current_status = simulator.get_status()
-        if current_status["status"] == "error":
-            raise HTTPException(status_code=500, detail="Failed to start simulation")
-        else:
-            raise HTTPException(status_code=500, detail="Failed to start simulation")
+        raise HTTPException(status_code=500, detail="Failed to start simulation")
 
 @router.get("/status")
 async def get_simulation_status(simulator: SimulatorService = Depends(get_simulator_service)):

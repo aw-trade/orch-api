@@ -67,6 +67,9 @@ services:
       - MONGODB_PASSWORD=admin_pass
       - MONGODB_DATABASE=trading_configs
       - MAX_RUNTIME_SECS=280
+      # Redis connection settings
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
 
 networks:
   trading-network:

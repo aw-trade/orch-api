@@ -21,8 +21,10 @@ class PostgresClient:
         self.password = os.getenv("POSTGRES_PASSWORD", "trading_pass")
         
         # Backup configuration
+        self.backup_enabled = os.getenv("ENABLE_BACKUP", "false").lower() == "true"
         self.backup_dir = Path(os.getenv("BACKUP_DIR", "./backup"))
-        self.backup_dir.mkdir(exist_ok=True)
+        if self.backup_enabled:
+            self.backup_dir.mkdir(exist_ok=True)
         
         # Retry configuration
         self.max_retries = int(os.getenv("DB_MAX_RETRIES", "3"))
@@ -89,6 +91,10 @@ class PostgresClient:
 
     def _backup_to_file(self, operation_type: str, data: Dict):
         """Backup operation data to JSON file when database is unavailable"""
+        if not self.backup_enabled:
+            logger.debug(f"Backup disabled - skipping backup for {operation_type}")
+            return False
+            
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"{operation_type}_{timestamp}_{data.get('run_id', 'unknown')}.json"
@@ -112,6 +118,10 @@ class PostgresClient:
 
     async def process_backup_files(self):
         """Process backup files when database comes back online"""
+        if not self.backup_enabled:
+            logger.debug("Backup disabled - skipping backup file processing")
+            return
+            
         try:
             backup_files = list(self.backup_dir.glob("*.json"))
             if not backup_files:
@@ -192,9 +202,10 @@ class PostgresClient:
                         status, initial_capital, final_capital, total_pnl, total_fees, 
                         net_pnl, return_pct, max_drawdown, total_trades, winning_trades, 
                         losing_trades, win_rate, signals_received, signals_executed, 
-                        execution_rate, total_volume, sharpe_ratio, avg_win, avg_loss
+                        execution_rate, total_volume, sharpe_ratio, avg_win, avg_loss,
+                        created_at, updated_at
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 
-                             $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+                             $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
                 """, 
                     simulation.run_id, simulation.start_time, simulation.end_time,
                     simulation.duration_seconds, simulation.algorithm_version,
@@ -204,15 +215,15 @@ class PostgresClient:
                     simulation.total_trades, simulation.winning_trades, simulation.losing_trades,
                     simulation.win_rate, simulation.signals_received, simulation.signals_executed,
                     simulation.execution_rate, simulation.total_volume, simulation.sharpe_ratio,
-                    simulation.avg_win, simulation.avg_loss
+                    simulation.avg_win, simulation.avg_loss, simulation.created_at, simulation.updated_at
                 )
         
         try:
             await self._execute_with_retry(_create_operation)
-            logger.info(f"Created simulation run: {simulation.run_id}")
+            logger.info(f"✅ PostgreSQL: Created simulation run {simulation.run_id} with status {simulation.status.value}")
             return True
         except Exception as e:
-            logger.error(f"Failed to create simulation run {simulation.run_id}: {e}")
+            logger.error(f"❌ PostgreSQL: Failed to create simulation run {simulation.run_id}: {e}")
             
             # Backup to file as fallback
             backup_data = simulation.dict()
@@ -242,7 +253,7 @@ class PostgresClient:
             
             query = f"""
                 UPDATE simulation_runs 
-                SET {', '.join(set_clauses)}, updated_at = NOW()
+                SET {', '.join(set_clauses)}
                 WHERE run_id = ${param_count}
             """
             
@@ -251,10 +262,10 @@ class PostgresClient:
         
         try:
             await self._execute_with_retry(_update_operation)
-            logger.debug(f"Updated simulation run: {run_id}")
+            logger.info(f"✅ PostgreSQL: Updated simulation run {run_id} with {len(updates)} fields: {list(updates.keys())}")
             return True
         except Exception as e:
-            logger.error(f"Failed to update simulation run {run_id}: {e}")
+            logger.error(f"❌ PostgreSQL: Failed to update simulation run {run_id}: {e}")
             
             # Backup to file as fallback
             backup_data = {"run_id": run_id, "updates": updates}
@@ -326,9 +337,10 @@ class PostgresClient:
                     trade.quantity, trade.price, trade.timestamp_ms, trade.confidence,
                     trade.fees, trade.source_algo
                 )
+            logger.info(f"✅ PostgreSQL: Added trade {trade.symbol} {trade.side.value} {trade.quantity}@{trade.price} for run {trade.run_id}")
             return True
         except Exception as e:
-            logger.error(f"Failed to add trade for run {trade.run_id}: {e}")
+            logger.error(f"❌ PostgreSQL: Failed to add trade for run {trade.run_id}: {e}")
             return False
 
     async def get_trades(self, run_id: str) -> List[Trade]:
@@ -366,9 +378,10 @@ class PostgresClient:
                     position.avg_price, position.unrealized_pnl, position.realized_pnl,
                     position.last_price, position.last_update_ms
                 )
+            logger.info(f"✅ PostgreSQL: Upserted position {position.symbol} qty={position.quantity} for run {position.run_id}")
             return True
         except Exception as e:
-            logger.error(f"Failed to upsert position for run {position.run_id}: {e}")
+            logger.error(f"❌ PostgreSQL: Failed to upsert position for run {position.run_id}: {e}")
             return False
 
     async def get_positions(self, run_id: str) -> List[Position]:

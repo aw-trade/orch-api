@@ -102,6 +102,7 @@ class ComposeGenerator:
         simulator_env = [
             f"ALGORITHM_SOURCE_IP=order-book-algo-{run_id}",
             "ALGORITHM_SOURCE_PORT=9999",
+            "LISTEN_PORT=9999",
             "POSTGRES_HOST=postgres",
             "POSTGRES_PORT=5432",
             "POSTGRES_DB=trading_results",
@@ -112,7 +113,9 @@ class ComposeGenerator:
             "MONGODB_USERNAME=admin",
             "MONGODB_PASSWORD=admin_pass",
             "MONGODB_DATABASE=trading_configs",
-            f"SIMULATION_RUN_ID={run_id}"
+            f"SIMULATION_RUN_ID={run_id}",
+            "REDIS_HOST=redis",
+            "REDIS_PORT=6379"
         ]
         
         # Add simulator configuration

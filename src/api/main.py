@@ -8,13 +8,49 @@ from src.api.endpoints import simulation, results, analytics, resources
 from src.database.postgres_client import postgres_client
 from src.database.mongodb_client import mongodb_client
 from src.services.simulator_service import SimulatorService
+from src.services.redis_consumer import RedisStreamConsumer
+from src.services.database_service import DatabaseService
 from src.core.config import get_config
 
 background_task_running = False
+redis_consumer_running = False
 app_config = get_config()
+redis_consumer = None
+
+async def redis_stream_consumption():
+    """Background task to consume data from Redis streams"""
+    global redis_consumer_running, redis_consumer
+    redis_consumer_running = True
+    
+    logger = logging.getLogger(__name__)
+    
+    # Initialize Redis consumer with database service
+    database_service = DatabaseService()
+    redis_consumer = RedisStreamConsumer(database_service)
+    
+    try:
+        # Connect to Redis and databases
+        await database_service.connect()
+        if not await redis_consumer.connect():
+            logger.error("Failed to connect to Redis stream")
+            return
+        
+        logger.info("🚀 Starting Redis stream consumption")
+        
+        # Start consuming messages
+        await redis_consumer.start_consuming()
+        
+    except Exception as e:
+        logger.error(f"Error in Redis stream consumption: {e}")
+    finally:
+        if redis_consumer:
+            await redis_consumer.disconnect()
+        await database_service.disconnect()
+    
+    logger.info("Redis stream consumption background task stopped")
 
 async def periodic_stats_collection():
-    """Background task to collect live stats periodically from running simulations"""
+    """Legacy background task - kept for fallback if Redis is unavailable"""
     global background_task_running
     background_task_running = True
     
@@ -91,25 +127,45 @@ async def store_periodic_stats(run_id: str, stats: Dict):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global background_task_running
+    global background_task_running, redis_consumer_running, redis_consumer
     
     # Startup
     logging.basicConfig(level=logging.INFO)
     await postgres_client.connect()
     await mongodb_client.connect()
     
-    # Start background task
-    background_task = asyncio.create_task(periodic_stats_collection())
+    # Start Redis stream consumer (primary method)
+    redis_task = asyncio.create_task(redis_stream_consumption())
+    
+    # Start legacy HTTP polling as fallback (optional)
+    background_task = None
+    if app_config.stats_collection.collection_enabled:
+        background_task = asyncio.create_task(periodic_stats_collection())
     
     yield
     
     # Shutdown
+    redis_consumer_running = False
+    if redis_consumer:
+        await redis_consumer.stop_consuming()
+    
     background_task_running = False
-    background_task.cancel()
+    
+    # Cancel tasks
+    redis_task.cancel()
+    if background_task:
+        background_task.cancel()
+    
     try:
-        await background_task
+        await redis_task
     except asyncio.CancelledError:
         pass
+    
+    if background_task:
+        try:
+            await background_task
+        except asyncio.CancelledError:
+            pass
     
     await postgres_client.disconnect()
     await mongodb_client.disconnect()
@@ -140,26 +196,117 @@ async def health_check():
         resource_manager = ResourceManager(SimulatorService())
         resource_status = resource_manager.check_resource_limits()
         
+        redis_healthy = redis_consumer is not None and redis_consumer_running
+        
         return {
             "status": "healthy" if postgres_healthy and mongo_healthy else "degraded",
             "databases": {
                 "postgresql": "connected" if postgres_healthy else "disconnected",
-                "mongodb": "connected" if mongo_healthy else "disconnected"
+                "mongodb": "connected" if mongo_healthy else "disconnected",
+                "redis": "connected" if redis_healthy else "disconnected"
             },
             "resources": {
                 "active_simulations": resource_status["active_runs"],
                 "at_limit": resource_status["at_limit"],
                 "warnings": resource_status["warnings"]
             },
-            "stats_collection": {
-                "enabled": app_config.stats_collection.collection_enabled,
-                "interval_seconds": app_config.stats_collection.collection_interval_seconds,
-                "running": background_task_running
+            "data_collection": {
+                "redis_streams": {
+                    "enabled": True,
+                    "running": redis_consumer_running
+                },
+                "legacy_http_polling": {
+                    "enabled": app_config.stats_collection.collection_enabled,
+                    "interval_seconds": app_config.stats_collection.collection_interval_seconds,
+                    "running": background_task_running
+                }
             }
         }
     except Exception as e:
         return {
             "status": "unhealthy",
+            "error": str(e)
+        }
+
+@app.get("/health/redis-consumer")
+async def redis_consumer_health():
+    """Redis consumer health and statistics endpoint"""
+    try:
+        if not redis_consumer:
+            return {
+                "status": "not_initialized",
+                "message": "Redis consumer not initialized"
+            }
+        
+        # Get consumer statistics
+        stats = redis_consumer.get_consumer_stats()
+        
+        # Get Redis stream info
+        stream_info = await redis_consumer.get_stream_info()
+        
+        # Determine health status
+        status = "healthy"
+        if not stats["is_running"]:
+            status = "stopped"
+        elif not stats["connected"]:
+            status = "disconnected"
+        elif stats["database_write_failures"] > 0:
+            failure_rate = stats["database_write_failures"] / (stats["database_write_success"] + stats["database_write_failures"])
+            if failure_rate > 0.1:  # More than 10% failures
+                status = "degraded"
+        
+        return {
+            "status": status,
+            "consumer_stats": stats,
+            "stream_info": stream_info,
+            "health_indicators": {
+                "is_running": stats["is_running"],
+                "connected": stats["connected"],
+                "messages_processed": stats["messages_processed"],
+                "database_write_success": stats["database_write_success"],
+                "database_write_failures": stats["database_write_failures"],
+                "success_rate": stats.get("success_rate", 0),
+                "messages_per_second": stats.get("messages_per_second", 0),
+                "last_message_time": stats["last_message_time"],
+                "last_error": stats["last_error"]
+            }
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+@app.get("/debug/redis-messages")
+async def debug_redis_messages():
+    """Debug endpoint to check recent Redis messages"""
+    try:
+        if not redis_consumer or not redis_consumer.redis_client:
+            return {
+                "error": "Redis consumer not available"
+            }
+        
+        # Get recent messages from the stream
+        messages = await redis_consumer.redis_client.xrevrange(
+            app_config.database.redis_stream_name,
+            count=10
+        )
+        
+        formatted_messages = []
+        for msg_id, fields in messages:
+            formatted_messages.append({
+                "id": msg_id,
+                "timestamp": msg_id.split('-')[0],
+                "fields": fields
+            })
+        
+        return {
+            "stream_name": app_config.database.redis_stream_name,
+            "recent_messages": formatted_messages,
+            "message_count": len(formatted_messages)
+        }
+    except Exception as e:
+        return {
             "error": str(e)
         }
 

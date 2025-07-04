@@ -23,6 +23,11 @@ class DatabaseConfig(BaseModel):
     # MongoDB specific
     mongodb_url: str = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
     mongodb_db: str = os.getenv("MONGODB_DB", "trading_configs")
+    
+    # Redis specific
+    redis_host: str = os.getenv("REDIS_HOST", "localhost")
+    redis_port: int = int(os.getenv("REDIS_PORT", "6379"))
+    redis_stream_name: str = os.getenv("REDIS_STREAM_NAME", "trading-stats")
 
 
 class StatsCollectionConfig(BaseModel):
