@@ -31,6 +31,7 @@ class SimulatorConfig(BaseModel):
     ENABLE_SHORTING: Optional[bool] = True
     STATS_INTERVAL_SECS: Optional[int] = 30
     AUTO_REGISTER: Optional[bool] = True
+    MAX_RUNTIME_SECS: Optional[int] = None
 
 class SimulationConfigDocument(BaseModel):
     run_id: str

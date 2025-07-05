@@ -15,7 +15,8 @@ class ComposeGenerator:
     def generate_compose_file(self, 
                             run_id: str, 
                             algo_config: Optional[AlgoConfig] = None,
-                            simulator_config: Optional[SimulatorConfig] = None) -> str:
+                            simulator_config: Optional[SimulatorConfig] = None,
+                            duration_seconds: Optional[int] = None) -> str:
         """Generate a unique docker-compose file for a simulation run"""
         
         # Load template
@@ -123,6 +124,10 @@ class ComposeGenerator:
             for key, value in simulator_config.dict().items():
                 if value is not None:
                     simulator_env.append(f"{key}={value}")
+        
+        # Add MAX_RUNTIME_SECS from duration_seconds parameter
+        if duration_seconds is not None:
+            simulator_env.append(f"MAX_RUNTIME_SECS={duration_seconds}")
         
         compose["services"][f"trade-simulator-{run_id}"] = {
             "image": "trade-simulator:latest",

@@ -18,3 +18,6 @@ for pattern in "${PATTERNS[@]}"; do
         echo "No containers found matching $pattern"
     fi
 done
+
+
+docker network prune

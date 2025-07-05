@@ -92,7 +92,7 @@ class SimulatorService:
             
             # Generate unique compose file for this simulation
             compose_file_path = self.compose_generator.generate_compose_file(
-                run_id, algo_consts, simulator_consts
+                run_id, algo_consts, simulator_consts, duration_seconds
             )
             simulation_run.compose_file_path = compose_file_path
             
