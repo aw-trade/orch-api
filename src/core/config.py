@@ -26,6 +26,13 @@ class DatabaseConfig(BaseModel):
     postgres_slow_query_threshold: float = float(os.getenv("POSTGRES_SLOW_QUERY_THRESHOLD", "0.1"))
     postgres_log_level: str = os.getenv("POSTGRES_LOG_LEVEL", "INFO")
     
+    # PostgreSQL transaction configuration
+    postgres_transaction_isolation: str = os.getenv("POSTGRES_TRANSACTION_ISOLATION", "READ_COMMITTED")
+    postgres_statement_timeout: str = os.getenv("POSTGRES_STATEMENT_TIMEOUT", "30s")
+    postgres_lock_timeout: str = os.getenv("POSTGRES_LOCK_TIMEOUT", "10s")
+    postgres_idle_timeout: str = os.getenv("POSTGRES_IDLE_TIMEOUT", "60s")
+    postgres_log_transactions: bool = os.getenv("POSTGRES_LOG_TRANSACTIONS", "true").lower() == "true"
+    
     # MongoDB specific
     mongodb_url: str = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
     mongodb_db: str = os.getenv("MONGODB_DB", "trading_configs")

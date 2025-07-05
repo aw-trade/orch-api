@@ -97,6 +97,59 @@ class PostgresClient:
             execution_time = time.time() - start_time
             self._log_query(query, params, execution_time, error)
     
+    async def _execute_with_transaction(self, conn, query: str, *params):
+        """Execute query with explicit transaction and logging"""
+        start_time = time.time()
+        error = None
+        
+        try:
+            async with conn.transaction():
+                result = await conn.execute(query, *params)
+                config = get_config()
+                if config.database.postgres_log_transactions:
+                    logger.debug(f"🔄 Transaction committed for query: {query.strip()[:50]}...")
+                return result
+        except Exception as e:
+            error = e
+            config = get_config()
+            if config.database.postgres_log_transactions:
+                logger.error(f"🔄 Transaction rolled back due to error: {e}")
+            raise
+        finally:
+            execution_time = time.time() - start_time
+            self._log_query(query, params, execution_time, error)
+    
+    async def _execute_with_transaction_and_rowcount(self, conn, query: str, *params):
+        """Execute query with explicit transaction and return affected row count"""
+        start_time = time.time()
+        error = None
+        
+        try:
+            async with conn.transaction():
+                result = await conn.execute(query, *params)
+                # Extract row count from result (e.g., "UPDATE 1" -> 1)
+                row_count = 0
+                if result.startswith('UPDATE '):
+                    row_count = int(result.split()[1])
+                elif result.startswith('INSERT '):
+                    row_count = int(result.split()[2])
+                elif result.startswith('DELETE '):
+                    row_count = int(result.split()[1])
+                
+                config = get_config()
+                if config.database.postgres_log_transactions:
+                    logger.debug(f"🔄 Transaction committed for query: {query.strip()[:50]}... (affected {row_count} rows)")
+                return row_count
+        except Exception as e:
+            error = e
+            config = get_config()
+            if config.database.postgres_log_transactions:
+                logger.error(f"🔄 Transaction rolled back due to error: {e}")
+            raise
+        finally:
+            execution_time = time.time() - start_time
+            self._log_query(query, params, execution_time, error)
+    
     async def _fetch_with_logging(self, conn, query: str, *params):
         """Fetch query results with logging and timing"""
         start_time = time.time()
@@ -240,9 +293,18 @@ class PostgresClient:
                 password=self.password,
                 min_size=2,
                 max_size=10,
-                command_timeout=60
+                command_timeout=60,
+                # Explicit transaction configuration
+                server_settings={
+                    'application_name': 'orch-api',
+                    'timezone': 'UTC',
+                    'statement_timeout': get_config().database.postgres_statement_timeout,
+                    'lock_timeout': get_config().database.postgres_lock_timeout,
+                    'idle_in_transaction_session_timeout': get_config().database.postgres_idle_timeout
+                }
             )
             logger.info(f"Connected to PostgreSQL at {self.host}:{self.port}")
+            logger.info("PostgreSQL connection pool configured with explicit transaction settings")
             
             # Reset circuit breaker on successful connection
             self.circuit_open = False
@@ -265,7 +327,7 @@ class PostgresClient:
         """Create a new simulation run record with retry logic and backup"""
         async def _create_operation():
             async with self.connection_pool.acquire() as conn:
-                await conn.execute("""
+                await self._execute_with_transaction(conn, """
                     INSERT INTO simulation_runs (
                         run_id, start_time, end_time, duration_seconds, algorithm_version, 
                         status, initial_capital, final_capital, total_pnl, total_fees, 
@@ -301,11 +363,62 @@ class PostgresClient:
             
             return False
 
+    async def check_simulation_run_exists(self, run_id: str) -> bool:
+        """Check if a simulation run exists in the database"""
+        try:
+            async with self.connection_pool.acquire() as conn:
+                result = await self._fetchrow_with_logging(
+                    conn, "SELECT 1 FROM simulation_runs WHERE run_id = $1", run_id
+                )
+                return result is not None
+        except Exception as e:
+            logger.error(f"Failed to check if simulation run {run_id} exists: {e}")
+            return False
+
+    async def create_missing_simulation_run(self, run_id: str) -> bool:
+        """Create a minimal simulation run record for missing run_id"""
+        try:
+            from .models import SimulationRun, SimulationStatus
+            from datetime import datetime
+            
+            # Create a minimal simulation record with default values
+            simulation = SimulationRun(
+                run_id=run_id,
+                start_time=datetime.now(),
+                duration_seconds=0,  # Will be updated later
+                algorithm_version="unknown",
+                status=SimulationStatus.RUNNING,
+                initial_capital=0.0,  # Will be updated later
+                created_at=datetime.now(),
+                updated_at=datetime.now()
+            )
+            
+            logger.info(f"🔄 Creating minimal simulation run record for {run_id}")
+            success = await self.create_simulation_run(simulation)
+            return success
+        except Exception as e:
+            logger.error(f"Failed to create missing simulation run {run_id}: {e}")
+            return False
+
     async def update_simulation_run(self, run_id: str, updates: Dict[str, Any]) -> bool:
         """Update simulation run with new data, retry logic and backup"""
         if not updates:
             return True
+        
+        # First check if the record exists
+        exists = await self.check_simulation_run_exists(run_id)
+        if not exists:
+            logger.warning(f"⚠️  Simulation run {run_id} does not exist in database")
+            logger.info(f"🔄 Attempting to create missing simulation run record for {run_id}")
             
+            # Create a minimal simulation run record
+            success = await self.create_missing_simulation_run(run_id)
+            if not success:
+                logger.error(f"❌ Failed to create missing simulation run {run_id}")
+                return False
+            else:
+                logger.info(f"✅ Created missing simulation run {run_id}")
+        
         async def _update_operation():
             # Remove updated_at from updates since it's handled by the database trigger
             filtered_updates = {k: v for k, v in updates.items() if k != 'updated_at'}
@@ -335,10 +448,27 @@ class PostgresClient:
             """
             
             async with self.connection_pool.acquire() as conn:
-                await self._execute_with_logging(conn, query, *values)
+                affected_rows = await self._execute_with_transaction_and_rowcount(conn, query, *values)
+                
+                # Check if any rows were actually updated
+                if affected_rows == 0:
+                    logger.warning(f"⚠️  UPDATE query executed successfully but affected 0 rows for run_id: {run_id}")
+                    logger.warning(f"⚠️  This suggests the run_id '{run_id}' does not exist in the database")
+                    logger.warning(f"⚠️  Query: {query.strip()}")
+                    logger.warning(f"⚠️  Values: {values}")
+                    return False
+                else:
+                    logger.debug(f"📊 UPDATE query affected {affected_rows} rows for run_id: {run_id}")
+                    return True
         
         try:
-            await self._execute_with_retry(_update_operation)
+            update_result = await self._execute_with_retry(_update_operation)
+            
+            # Handle the case where _update_operation returned False (0 rows affected)
+            if update_result is False:
+                logger.error(f"❌ PostgreSQL: Failed to update simulation run {run_id} - record not found")
+                return False
+            
             filtered_count = len([k for k in updates.keys() if k != 'updated_at'])
             if filtered_count > 0:
                 logger.info(f"✅ PostgreSQL: Updated simulation run {run_id} with {filtered_count} fields: {[k for k in updates.keys() if k != 'updated_at']}")
@@ -408,7 +538,7 @@ class PostgresClient:
         """Add a trade record"""
         try:
             async with self.connection_pool.acquire() as conn:
-                await self._execute_with_logging(conn, """
+                await self._execute_with_transaction(conn, """
                     INSERT INTO trades (
                         run_id, trade_id, symbol, side, quantity, price, 
                         timestamp_ms, confidence, fees, source_algo
@@ -441,7 +571,7 @@ class PostgresClient:
         """Insert or update a position record"""
         try:
             async with self.connection_pool.acquire() as conn:
-                await conn.execute("""
+                await self._execute_with_transaction(conn, """
                     INSERT INTO positions (
                         run_id, symbol, quantity, avg_price, unrealized_pnl, 
                         realized_pnl, last_price, last_update_ms
