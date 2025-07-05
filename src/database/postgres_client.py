@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import time
 from .models import SimulationRun, Trade, Position, SimulationStatus
+from ..core.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,74 @@ class PostgresClient:
         if self.failure_count >= self.circuit_breaker_threshold:
             logger.error(f"Circuit breaker opened after {self.failure_count} failures")
             self.circuit_open = True
+    
+    def _log_query(self, query: str, params: tuple = None, execution_time: float = None, error: Exception = None):
+        """Log database query with timing and error information"""
+        config = get_config()
+        
+        if not config.database.postgres_log_queries:
+            return
+            
+        # Create structured log entry
+        log_data = {
+            "query": query.strip(),
+            "params_count": len(params) if params else 0,
+            "execution_time_ms": round(execution_time * 1000, 2) if execution_time else None,
+            "error": str(error) if error else None
+        }
+        
+        # Log level based on success/failure and timing
+        if error:
+            logger.error(f"🔴 PostgreSQL Query Failed: {log_data}")
+        elif execution_time and execution_time > config.database.postgres_slow_query_threshold:
+            logger.warning(f"🟡 PostgreSQL Slow Query: {log_data}")
+        else:
+            logger.info(f"🟢 PostgreSQL Query: {log_data}")
+    
+    async def _execute_with_logging(self, conn, query: str, *params):
+        """Execute query with logging and timing"""
+        start_time = time.time()
+        error = None
+        
+        try:
+            result = await conn.execute(query, *params)
+            return result
+        except Exception as e:
+            error = e
+            raise
+        finally:
+            execution_time = time.time() - start_time
+            self._log_query(query, params, execution_time, error)
+    
+    async def _fetch_with_logging(self, conn, query: str, *params):
+        """Fetch query results with logging and timing"""
+        start_time = time.time()
+        error = None
+        
+        try:
+            result = await conn.fetch(query, *params)
+            return result
+        except Exception as e:
+            error = e
+            raise
+        finally:
+            execution_time = time.time() - start_time
+            self._log_query(query, params, execution_time, error)
+    
+    async def _fetchrow_with_logging(self, conn, query: str, *params):
+        """Fetch single row with logging and timing"""
+        start_time = time.time()
+        error = None
+        
+        try:
+            result = await conn.fetchrow(query, *params)
+            return result
+        except Exception as e:
+            error = e
+            raise
+        finally:
+            execution_time = time.time() - start_time
+            self._log_query(query, params, execution_time, error)
 
     def _record_success(self):
         """Record a successful database operation"""
@@ -238,12 +307,20 @@ class PostgresClient:
             return True
             
         async def _update_operation():
+            # Remove updated_at from updates since it's handled by the database trigger
+            filtered_updates = {k: v for k, v in updates.items() if k != 'updated_at'}
+            
+            # Check if there are any fields to update after filtering
+            if not filtered_updates:
+                logger.debug(f"📊 No fields to update for run_id {run_id} after filtering (only updated_at was provided)")
+                return
+            
             # Build dynamic update query
             set_clauses = []
             values = []
             param_count = 1
             
-            for key, value in updates.items():
+            for key, value in filtered_updates.items():
                 set_clauses.append(f"{key} = ${param_count}")
                 values.append(value)
                 param_count += 1
@@ -258,11 +335,15 @@ class PostgresClient:
             """
             
             async with self.connection_pool.acquire() as conn:
-                await conn.execute(query, *values)
+                await self._execute_with_logging(conn, query, *values)
         
         try:
             await self._execute_with_retry(_update_operation)
-            logger.info(f"✅ PostgreSQL: Updated simulation run {run_id} with {len(updates)} fields: {list(updates.keys())}")
+            filtered_count = len([k for k in updates.keys() if k != 'updated_at'])
+            if filtered_count > 0:
+                logger.info(f"✅ PostgreSQL: Updated simulation run {run_id} with {filtered_count} fields: {[k for k in updates.keys() if k != 'updated_at']}")
+            else:
+                logger.debug(f"📊 PostgreSQL: No database update needed for {run_id} (only updated_at was provided)")
             return True
         except Exception as e:
             logger.error(f"❌ PostgreSQL: Failed to update simulation run {run_id}: {e}")
@@ -278,8 +359,8 @@ class PostgresClient:
         """Get simulation run by ID"""
         try:
             async with self.connection_pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT * FROM simulation_runs WHERE run_id = $1", run_id
+                row = await self._fetchrow_with_logging(
+                    conn, "SELECT * FROM simulation_runs WHERE run_id = $1", run_id
                 )
                 if row:
                     return SimulationRun(**dict(row))
@@ -327,7 +408,7 @@ class PostgresClient:
         """Add a trade record"""
         try:
             async with self.connection_pool.acquire() as conn:
-                await conn.execute("""
+                await self._execute_with_logging(conn, """
                     INSERT INTO trades (
                         run_id, trade_id, symbol, side, quantity, price, 
                         timestamp_ms, confidence, fees, source_algo

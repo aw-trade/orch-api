@@ -3,7 +3,8 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 import redis.asyncio as redis
 from redis.exceptions import ConnectionError, ResponseError
@@ -86,10 +87,10 @@ class RedisStreamConsumer:
                 await self.redis_client.xgroup_create(
                     stream_name,
                     self.consumer_group,
-                    id="0",
+                    id="$",  # Start from end of stream (only new messages)
                     mkstream=True
                 )
-                logger.info(f"✅ Created consumer group: {self.consumer_group}")
+                logger.info(f"✅ Created consumer group: {self.consumer_group} (starting from stream end)")
                 
             except ResponseError as e:
                 if "BUSYGROUP" in str(e):
@@ -105,6 +106,15 @@ class RedisStreamConsumer:
                 
                 if group_exists:
                     logger.info(f"✅ Consumer group '{self.consumer_group}' verified")
+                    
+                    # Check if we need to reset consumer group position
+                    if self.config.database.redis_consumer_group_reset:
+                        try:
+                            await self.redis_client.xgroup_setid(stream_name, self.consumer_group, "$")
+                            logger.info(f"🔄 Reset consumer group '{self.consumer_group}' to stream end")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to reset consumer group position: {e}")
+                    
                     return True
                 else:
                     logger.error(f"❌ Consumer group '{self.consumer_group}' not found after creation")
@@ -162,6 +172,24 @@ class RedisStreamConsumer:
         self.running = False
         logger.info("🛑 Stopping Redis stream consumption")
     
+    def _is_message_too_old(self, message_id: str) -> bool:
+        """Check if message is older than configured threshold"""
+        try:
+            # Redis message ID format: timestamp-sequence (e.g., "1751695445548-0")
+            timestamp_ms = int(message_id.split('-')[0])
+            message_time = datetime.fromtimestamp(timestamp_ms / 1000)
+            age_seconds = (datetime.now() - message_time).total_seconds()
+            
+            max_age = self.config.database.redis_message_max_age_seconds
+            if age_seconds > max_age:
+                logger.warning(f"⏰ Skipping old message {message_id} (age: {age_seconds:.1f}s > {max_age}s)")
+                return True
+            return False
+            
+        except (ValueError, IndexError) as e:
+            logger.warning(f"⚠️ Invalid message ID format {message_id}: {e}")
+            return False
+    
     async def _process_messages(self, messages: List[tuple]):
         """Process messages from Redis stream"""
         for stream_name, stream_messages in messages:
@@ -170,6 +198,20 @@ class RedisStreamConsumer:
             for message_id, fields in stream_messages:
                 message_processed = False
                 self.stats["last_message_time"] = datetime.now()
+                
+                # Skip messages that are too old
+                if self._is_message_too_old(message_id):
+                    # Acknowledge old messages to prevent them from being redelivered
+                    try:
+                        await self.redis_client.xack(
+                            self.config.database.redis_stream_name,
+                            self.consumer_group,
+                            message_id
+                        )
+                        logger.debug(f"✅ Acknowledged and skipped old message {message_id}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to acknowledge old message {message_id}: {e}")
+                    continue
                 
                 try:
                     logger.debug(f"🔄 Processing message {message_id}: {fields}")

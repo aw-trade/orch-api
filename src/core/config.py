@@ -20,6 +20,12 @@ class DatabaseConfig(BaseModel):
     postgres_user: str = os.getenv("POSTGRES_USER", "trading_user")
     postgres_password: str = os.getenv("POSTGRES_PASSWORD", "trading_pass")
     
+    # PostgreSQL logging configuration
+    postgres_log_queries: bool = os.getenv("POSTGRES_LOG_QUERIES", "true").lower() == "true"
+    postgres_log_slow_queries: bool = os.getenv("POSTGRES_LOG_SLOW_QUERIES", "true").lower() == "true"
+    postgres_slow_query_threshold: float = float(os.getenv("POSTGRES_SLOW_QUERY_THRESHOLD", "0.1"))
+    postgres_log_level: str = os.getenv("POSTGRES_LOG_LEVEL", "INFO")
+    
     # MongoDB specific
     mongodb_url: str = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
     mongodb_db: str = os.getenv("MONGODB_DB", "trading_configs")
@@ -27,7 +33,9 @@ class DatabaseConfig(BaseModel):
     # Redis specific
     redis_host: str = os.getenv("REDIS_HOST", "localhost")
     redis_port: int = int(os.getenv("REDIS_PORT", "6379"))
-    redis_stream_name: str = os.getenv("REDIS_STREAM_NAME", "trading-stats")
+    redis_channel_name: str = os.getenv("REDIS_CHANNEL_NAME", "trading-stats")
+    redis_connection_timeout: int = int(os.getenv("REDIS_CONNECTION_TIMEOUT", "5"))
+    redis_reconnect_delay: int = int(os.getenv("REDIS_RECONNECT_DELAY", "5"))
 
 
 class StatsCollectionConfig(BaseModel):

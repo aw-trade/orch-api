@@ -1,14 +1,16 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import logging
 import asyncio
+import traceback
 from typing import Dict
 
 from src.api.endpoints import simulation, results, analytics, resources
 from src.database.postgres_client import postgres_client
 from src.database.mongodb_client import mongodb_client
 from src.services.simulator_service import SimulatorService
-from src.services.redis_consumer import RedisStreamConsumer
+from src.services.redis_pubsub_consumer import RedisPubSubConsumer
 from src.services.database_service import DatabaseService
 from src.core.config import get_config
 
@@ -17,37 +19,37 @@ redis_consumer_running = False
 app_config = get_config()
 redis_consumer = None
 
-async def redis_stream_consumption():
-    """Background task to consume data from Redis streams"""
+async def redis_pubsub_consumption():
+    """Background task to consume data from Redis Pub/Sub"""
     global redis_consumer_running, redis_consumer
     redis_consumer_running = True
     
     logger = logging.getLogger(__name__)
     
-    # Initialize Redis consumer with database service
+    # Initialize Redis Pub/Sub consumer with database service
     database_service = DatabaseService()
-    redis_consumer = RedisStreamConsumer(database_service)
+    redis_consumer = RedisPubSubConsumer(database_service)
     
     try:
         # Connect to Redis and databases
         await database_service.connect()
         if not await redis_consumer.connect():
-            logger.error("Failed to connect to Redis stream")
+            logger.error("Failed to connect to Redis Pub/Sub")
             return
         
-        logger.info("🚀 Starting Redis stream consumption")
+        logger.info("🚀 Starting Redis Pub/Sub consumption")
         
         # Start consuming messages
         await redis_consumer.start_consuming()
         
     except Exception as e:
-        logger.error(f"Error in Redis stream consumption: {e}")
+        logger.error(f"Error in Redis Pub/Sub consumption: {e}")
     finally:
         if redis_consumer:
             await redis_consumer.disconnect()
         await database_service.disconnect()
     
-    logger.info("Redis stream consumption background task stopped")
+    logger.info("Redis Pub/Sub consumption background task stopped")
 
 async def periodic_stats_collection():
     """Legacy background task - kept for fallback if Redis is unavailable"""
@@ -130,12 +132,28 @@ async def lifespan(app: FastAPI):
     global background_task_running, redis_consumer_running, redis_consumer
     
     # Startup
-    logging.basicConfig(level=logging.INFO)
+    # Configure logging with proper format for database operations
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler()
+        ]
+    )
+    
+    # Set PostgreSQL logger to appropriate level
+    postgres_logger = logging.getLogger('src.database.postgres_client')
+    postgres_logger.setLevel(logging.INFO)
+    
+    # Add database connection logs
+    logger = logging.getLogger(__name__)
+    logger.info("🚀 Starting FastAPI application with database logging enabled")
+    
     await postgres_client.connect()
     await mongodb_client.connect()
     
-    # Start Redis stream consumer (primary method)
-    redis_task = asyncio.create_task(redis_stream_consumption())
+    # Start Redis Pub/Sub consumer (primary method)
+    redis_task = asyncio.create_task(redis_pubsub_consumption())
     
     # Start legacy HTTP polling as fallback (optional)
     background_task = None
@@ -177,6 +195,27 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Global exception handler to log detailed error information"""
+    logger = logging.getLogger(__name__)
+    
+    # Log the full exception details
+    logger.error(f"❌ Unhandled exception on {request.method} {request.url}")
+    logger.error(f"❌ Exception type: {type(exc).__name__}")
+    logger.error(f"❌ Exception message: {str(exc)}")
+    logger.error(f"❌ Full traceback:\n{traceback.format_exc()}")
+    
+    # Return a JSON response with error details
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal Server Error",
+            "message": str(exc),
+            "type": type(exc).__name__
+        }
+    )
+
 # Include routers
 app.include_router(simulation.router)
 app.include_router(results.router)
@@ -211,7 +250,7 @@ async def health_check():
                 "warnings": resource_status["warnings"]
             },
             "data_collection": {
-                "redis_streams": {
+                "redis_pubsub": {
                     "enabled": True,
                     "running": redis_consumer_running
                 },
@@ -230,7 +269,7 @@ async def health_check():
 
 @app.get("/health/redis-consumer")
 async def redis_consumer_health():
-    """Redis consumer health and statistics endpoint"""
+    """Redis Pub/Sub consumer health and statistics endpoint"""
     try:
         if not redis_consumer:
             return {
@@ -241,8 +280,8 @@ async def redis_consumer_health():
         # Get consumer statistics
         stats = redis_consumer.get_consumer_stats()
         
-        # Get Redis stream info
-        stream_info = await redis_consumer.get_stream_info()
+        # Get Redis channel info
+        channel_info = await redis_consumer.get_channel_info()
         
         # Determine health status
         status = "healthy"
@@ -258,7 +297,7 @@ async def redis_consumer_health():
         return {
             "status": status,
             "consumer_stats": stats,
-            "stream_info": stream_info,
+            "channel_info": channel_info,
             "health_indicators": {
                 "is_running": stats["is_running"],
                 "connected": stats["connected"],
@@ -277,33 +316,25 @@ async def redis_consumer_health():
             "error": str(e)
         }
 
-@app.get("/debug/redis-messages")
-async def debug_redis_messages():
-    """Debug endpoint to check recent Redis messages"""
+@app.get("/debug/redis-channel")
+async def debug_redis_channel():
+    """Debug endpoint to check Redis channel information"""
     try:
         if not redis_consumer or not redis_consumer.redis_client:
             return {
                 "error": "Redis consumer not available"
             }
         
-        # Get recent messages from the stream
-        messages = await redis_consumer.redis_client.xrevrange(
-            app_config.database.redis_stream_name,
-            count=10
-        )
-        
-        formatted_messages = []
-        for msg_id, fields in messages:
-            formatted_messages.append({
-                "id": msg_id,
-                "timestamp": msg_id.split('-')[0],
-                "fields": fields
-            })
+        # Get channel information
+        channel_info = await redis_consumer.get_channel_info()
+        consumer_stats = redis_consumer.get_consumer_stats()
         
         return {
-            "stream_name": app_config.database.redis_stream_name,
-            "recent_messages": formatted_messages,
-            "message_count": len(formatted_messages)
+            "channel_name": app_config.database.redis_channel_name,
+            "channel_info": channel_info,
+            "consumer_stats": consumer_stats,
+            "last_message_time": consumer_stats.get("last_message_time"),
+            "messages_processed": consumer_stats.get("messages_processed", 0)
         }
     except Exception as e:
         return {
@@ -339,5 +370,8 @@ async def get_configuration():
 
 if __name__ == "__main__":
     import uvicorn
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
     uvicorn.run(app, host="0.0.0.0", port=8000)

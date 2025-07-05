@@ -87,7 +87,7 @@ class SimulatorService:
             
             # Ensure simulator config exists
             if simulator_consts is None:
-                from database.models import SimulatorConfig
+                from src.database.models import SimulatorConfig
                 simulator_consts = SimulatorConfig()
             
             # Generate unique compose file for this simulation

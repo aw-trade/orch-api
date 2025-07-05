@@ -59,13 +59,17 @@ class DatabaseService:
             raise ConnectionError("Database not connected")
         
         try:
-            logger.debug(f"📊 Converting stats data for run_id: {run_id}")
+            logger.info(f"📊 Converting stats data for run_id: {run_id}")
             # Convert Redis stream data to database format
             update_data = self._convert_stats_to_db_format(stats_data)
-            logger.debug(f"📊 Update data: {update_data}")
+            logger.info(f"📊 Update data ({len(update_data)} fields): {list(update_data.keys())}")
+            
+            if not update_data:
+                logger.warning(f"⚠️ No valid update data found for run_id: {run_id}")
+                return
             
             # Update simulation run record
-            logger.debug(f"📊 Updating PostgreSQL for run_id: {run_id}")
+            logger.info(f"📊 Updating PostgreSQL for run_id: {run_id}")
             await self.postgres_client.update_simulation_run(run_id, update_data)
             logger.info(f"✅ Successfully updated live stats for run_id: {run_id}")
             
@@ -146,45 +150,42 @@ class DatabaseService:
     
     def _convert_stats_to_db_format(self, stats_data: Dict[str, Any]) -> Dict[str, Any]:
         """Convert Redis stream stats data to database format"""
+        logger.info(f"📊 Raw stats data received: {stats_data}")
+        logger.info(f"📊 Available fields: {list(stats_data.keys())}")
         db_data = {}
         
-        # Financial metrics
-        if 'final_capital' in stats_data:
-            db_data['final_capital'] = stats_data['final_capital']
-        if 'total_pnl' in stats_data:
-            db_data['total_pnl'] = stats_data['total_pnl']
-        if 'total_fees' in stats_data:
-            db_data['total_fees'] = stats_data['total_fees']
-        if 'net_pnl' in stats_data:
-            db_data['net_pnl'] = stats_data['net_pnl']
-        if 'return_pct' in stats_data:
-            db_data['return_pct'] = stats_data['return_pct']
-        if 'max_drawdown' in stats_data:
-            db_data['max_drawdown'] = stats_data['max_drawdown']
+        # Create field mapping for flexible conversion
+        field_mapping = {
+            # Financial metrics - check multiple possible field names
+            'final_capital': ['final_capital', 'capital', 'final_balance', 'balance'],
+            'total_pnl': ['total_pnl', 'pnl', 'total_profit_loss', 'profit_loss'],
+            'total_fees': ['total_fees', 'fees', 'total_commission', 'commission'],
+            'net_pnl': ['net_pnl', 'net_profit_loss', 'net_profit', 'net_loss'],
+            'return_pct': ['return_pct', 'return_percentage', 'return', 'percentage_return'],
+            'max_drawdown': ['max_drawdown', 'maximum_drawdown', 'drawdown'],
+            
+            # Trading metrics
+            'total_trades': ['total_trades', 'trades', 'trade_count', 'num_trades'],
+            'winning_trades': ['winning_trades', 'wins', 'profitable_trades'],
+            'losing_trades': ['losing_trades', 'losses', 'unprofitable_trades'],
+            'win_rate': ['win_rate', 'win_ratio', 'success_rate'],
+            'signals_received': ['signals_received', 'total_signals', 'signals'],
+            'signals_executed': ['signals_executed', 'executed_signals', 'trades_executed'],
+            'total_volume': ['total_volume', 'volume', 'total_traded_volume'],
+            
+            # Performance metrics
+            'sharpe_ratio': ['sharpe_ratio', 'sharpe'],
+            'avg_win': ['avg_win', 'average_win', 'mean_win'],
+            'avg_loss': ['avg_loss', 'average_loss', 'mean_loss']
+        }
         
-        # Trading metrics
-        if 'total_trades' in stats_data:
-            db_data['total_trades'] = stats_data['total_trades']
-        if 'winning_trades' in stats_data:
-            db_data['winning_trades'] = stats_data['winning_trades']
-        if 'losing_trades' in stats_data:
-            db_data['losing_trades'] = stats_data['losing_trades']
-        if 'win_rate' in stats_data:
-            db_data['win_rate'] = stats_data['win_rate']
-        if 'signals_received' in stats_data:
-            db_data['signals_received'] = stats_data['signals_received']
-        if 'signals_executed' in stats_data:
-            db_data['signals_executed'] = stats_data['signals_executed']
-        if 'total_volume' in stats_data:
-            db_data['total_volume'] = stats_data['total_volume']
-        
-        # Performance metrics
-        if 'sharpe_ratio' in stats_data:
-            db_data['sharpe_ratio'] = stats_data['sharpe_ratio']
-        if 'avg_win' in stats_data:
-            db_data['avg_win'] = stats_data['avg_win']
-        if 'avg_loss' in stats_data:
-            db_data['avg_loss'] = stats_data['avg_loss']
+        # Map fields using the flexible mapping
+        for db_field, possible_names in field_mapping.items():
+            for field_name in possible_names:
+                if field_name in stats_data:
+                    db_data[db_field] = stats_data[field_name]
+                    logger.debug(f"📊 Mapped {field_name} -> {db_field}: {stats_data[field_name]}")
+                    break
         
         # Calculate execution rate if both signals_received and signals_executed are present
         if 'signals_received' in stats_data and 'signals_executed' in stats_data:
