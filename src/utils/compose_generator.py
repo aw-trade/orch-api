@@ -1,7 +1,7 @@
 import yaml
 import os
 from typing import Dict, Any, Optional
-from src.database.models import AlgoConfig, SimulatorConfig
+from src.database.models import AlgoConfig, SimulatorConfig, Algorithm
 
 
 class ComposeGenerator:
@@ -14,6 +14,7 @@ class ComposeGenerator:
     
     def generate_compose_file(self, 
                             run_id: str, 
+                            algorithm: Algorithm = Algorithm.ORDER_BOOK_ALGO,
                             algo_config: Optional[AlgoConfig] = None,
                             simulator_config: Optional[SimulatorConfig] = None,
                             duration_seconds: Optional[int] = None) -> str:
@@ -62,8 +63,8 @@ class ComposeGenerator:
             "expose": ["8888"]
         }
         
-        # Order Book Algorithm service
-        order_book_env = [
+        # Algorithm service
+        algorithm_env = [
             f"STREAMING_SOURCE_IP=market-streamer-{run_id}",
             "STREAMING_SOURCE_PORT=8888",
             "POSTGRES_HOST=postgres",
@@ -83,11 +84,15 @@ class ComposeGenerator:
         if algo_config:
             for key, value in algo_config.dict().items():
                 if value is not None:
-                    order_book_env.append(f"{key}={value}")
+                    algorithm_env.append(f"{key}={value}")
         
-        compose["services"][f"order-book-algo-{run_id}"] = {
-            "image": "order-book-algo:latest",
-            "container_name": f"order-book-algo-{run_id}",
+        # Use dynamic algorithm image
+        algorithm_image = f"{algorithm.value}:latest"
+        algorithm_service_name = f"{algorithm.value}-{run_id}"
+        
+        compose["services"][algorithm_service_name] = {
+            "image": algorithm_image,
+            "container_name": algorithm_service_name,
             "pull_policy": "never",
             "depends_on": [f"market-streamer-{run_id}"],
             "networks": [network_name, "external"],
@@ -95,13 +100,13 @@ class ComposeGenerator:
                 f"{order_book_port}:8002",
                 f"{signal_port}:9999"
             ],
-            "environment": order_book_env,
+            "environment": algorithm_env,
             "expose": ["9999"]
         }
         
         # Trade Simulator service
         simulator_env = [
-            f"ALGORITHM_SOURCE_IP=order-book-algo-{run_id}",
+            f"ALGORITHM_SOURCE_IP={algorithm_service_name}",
             "ALGORITHM_SOURCE_PORT=9999",
             "LISTEN_PORT=9999",
             "POSTGRES_HOST=postgres",
@@ -133,7 +138,7 @@ class ComposeGenerator:
             "image": "trade-simulator:latest",
             "container_name": f"trade-simulator-{run_id}",
             "pull_policy": "never",
-            "depends_on": [f"order-book-algo-{run_id}"],
+            "depends_on": [algorithm_service_name],
             "networks": [network_name, "external"],
             "ports": [
                 f"{trade_sim_port}:8003",

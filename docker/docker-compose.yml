@@ -12,9 +12,9 @@ services:
     expose:
       - "8888"
 
-  order-book-algo:
-    image: order-book-algo:latest
-    container_name: order-book-algo
+  rsi-algo:
+    image: rsi-algo:latest
+    container_name: rsi-algo
     pull_policy: never
     depends_on:
       - market-streamer
@@ -46,14 +46,14 @@ services:
     container_name: trade-simulator
     pull_policy: never
     depends_on:
-      - order-book-algo
+      - rsi-algo
     networks:
       - trading-network
       - external
     ports:
       - "8003:8003"
     environment:
-      - ALGORITHM_SOURCE_IP=order-book-algo  # Use service name
+      - ALGORITHM_SOURCE_IP=rsi-algo  # Use service name
       - ALGORITHM_SOURCE_PORT=9999
       # Database connection settings (external databases)
       - POSTGRES_HOST=postgres
@@ -66,7 +66,7 @@ services:
       - MONGODB_USERNAME=admin
       - MONGODB_PASSWORD=admin_pass
       - MONGODB_DATABASE=trading_configs
-      - MAX_RUNTIME_SECS=280
+      - MAX_RUNTIME_SECS=8
       # Redis connection settings
       - REDIS_HOST=redis
       - REDIS_PORT=6379

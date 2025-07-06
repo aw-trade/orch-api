@@ -81,6 +81,7 @@ async def start_simulation(
         created_at=datetime.now(),
         status=SimulationStatus.PENDING,
         duration_seconds=request.duration_seconds,
+        algorithm=request.algorithm,
         algorithm_version=request.algorithm_version,
         algo_config=algo_config,
         simulator_config=simulator_config,
@@ -95,6 +96,7 @@ async def start_simulation(
         run_id=run_id,
         start_time=datetime.now(),
         duration_seconds=request.duration_seconds,
+        algorithm=request.algorithm,
         algorithm_version=request.algorithm_version,
         status=SimulationStatus.PENDING,
         initial_capital=simulator_config.INITIAL_CAPITAL
@@ -106,6 +108,7 @@ async def start_simulation(
     success = simulator.start_simulation(
         run_id,
         request.duration_seconds,
+        request.algorithm,
         algo_config,
         simulator_config
     )

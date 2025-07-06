@@ -205,3 +205,12 @@ amiel@amiel-Prestige-14-A11MT:~/aw-trade/orch-api$ curl -X POST "http://localhos
 {"detail":"Failed to create simulation run record"}
 
 """
+
+
+"""
+ curl -X POST "http://localhost:8000/simulate/start" -H "Content-Type: application/json" -d '{"duration_seconds": 60, "algorithm": "rsi-algo"}'
+"""
+
+"""
+ curl -X POST "http://localhost:8000/simulate/start" -H "Content-Type: application/json" -d '{"duration_seconds": 60, "algorithm": "order-book-algo"}'
+"""

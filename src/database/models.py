@@ -15,6 +15,10 @@ class TradeSide(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
 
+class Algorithm(str, Enum):
+    ORDER_BOOK_ALGO = "order-book-algo"
+    RSI_ALGO = "rsi-algo"
+
 # MongoDB Models (Configuration Storage)
 class AlgoConfig(BaseModel):
     IMBALANCE_THRESHOLD: Optional[float] = 0.6
@@ -38,6 +42,7 @@ class SimulationConfigDocument(BaseModel):
     created_at: datetime
     status: SimulationStatus
     duration_seconds: int
+    algorithm: Algorithm = Algorithm.ORDER_BOOK_ALGO
     algorithm_version: str = "v1.0.0"
     algo_config: AlgoConfig
     simulator_config: SimulatorConfig
@@ -56,6 +61,7 @@ class SimulationRun(BaseModel):
     start_time: datetime
     end_time: Optional[datetime] = None
     duration_seconds: int
+    algorithm: Optional[Algorithm] = None
     algorithm_version: Optional[str] = None
     status: SimulationStatus
     
@@ -116,6 +122,7 @@ class Position(BaseModel):
 # API Request/Response Models
 class StartSimulationRequest(BaseModel):
     duration_seconds: int
+    algorithm: Algorithm = Algorithm.ORDER_BOOK_ALGO
     algo_consts: Optional[AlgoConfig] = None
     simulator_consts: Optional[SimulatorConfig] = None
     algorithm_version: str = "v1.0.0"

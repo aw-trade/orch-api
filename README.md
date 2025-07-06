@@ -69,6 +69,34 @@ docker-compose -f docker/docker-compose.yml up -d
 
 Once running, visit `http://localhost:8000/docs` for interactive API documentation.
 
+### Algorithm Selection
+
+The API now supports dynamic algorithm selection when starting simulations. Available algorithms:
+- `order-book-algo`: Order book imbalance-based trading algorithm
+- `rsi-algo`: RSI-based trading algorithm
+
+Example request:
+```json
+{
+  "duration_seconds": 300,
+  "algorithm": "rsi-algo",
+  "algo_consts": {
+    "IMBALANCE_THRESHOLD": 0.6,
+    "MIN_VOLUME_THRESHOLD": 10.0,
+    "LOOKBACK_PERIODS": 5,
+    "SIGNAL_COOLDOWN_MS": 100
+  },
+  "simulator_consts": {
+    "INITIAL_CAPITAL": 100000.0,
+    "POSITION_SIZE_PCT": 0.05,
+    "MAX_POSITION_SIZE": 10000.0,
+    "TRADING_FEE_PCT": 0.001,
+    "MIN_CONFIDENCE": 0.3,
+    "ENABLE_SHORTING": true
+  }
+}
+```
+
 ## Key Features
 
 - **Modular Architecture**: Clean separation of concerns with organized modules

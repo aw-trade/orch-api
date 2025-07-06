@@ -9,6 +9,7 @@ from enum import Enum
 from typing import Optional, Dict, List
 import logging
 from src.utils.compose_generator import ComposeGenerator
+from src.database.models import Algorithm
 from src.core.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ class SimulatorService:
         except Exception as e:
             raise Exception(f"Docker environment validation failed: {str(e)}")
         
-    def start_simulation(self, run_id: str, duration_seconds: int, algo_consts=None, simulator_consts=None) -> bool:
+    def start_simulation(self, run_id: str, duration_seconds: int, algorithm: Algorithm = Algorithm.ORDER_BOOK_ALGO, algo_consts=None, simulator_consts=None) -> bool:
         # Check if this run_id is already active
         if run_id in self.active_runs:
             logger.warning(f"Simulation {run_id} is already running")
@@ -92,7 +93,7 @@ class SimulatorService:
             
             # Generate unique compose file for this simulation
             compose_file_path = self.compose_generator.generate_compose_file(
-                run_id, algo_consts, simulator_consts, duration_seconds
+                run_id, algorithm, algo_consts, simulator_consts, duration_seconds
             )
             simulation_run.compose_file_path = compose_file_path
             
